@@ -1,0 +1,116 @@
+# Logical backups to the off-cluster vault. Two steps in one pod:
+#   1. init container "dump":  pg_dump in custom format plus a sha256 manifest
+#   2. container "upload":     push both objects to S3-compatible storage
+# Object keys are UTC timestamps, so lexical order equals chronological order.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  labels: {app.kubernetes.io/name: postgres-backup, app.kubernetes.io/part-of: phoenix}
+spec:
+  # Shipped suspended. scripts/deploy.sh enables it only after the database is
+  # confirmed healthy (and, during a rebuild, only after the restore is verified),
+  # so a freshly rebuilt empty database can never become the newest backup.
+  suspend: true
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: postgres-backup
+            app.kubernetes.io/part-of: phoenix
+            phoenix/db-client: "true"
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile: {type: RuntimeDefault}
+          initContainers:
+            - name: dump
+              image: postgres:16.4-alpine
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  rows="$(psql -tAc "SELECT CASE WHEN to_regclass('public.records') IS NULL THEN 0
+                                               ELSE (SELECT count(*) FROM records) END")"
+                  if [ "${rows}" -eq 0 ] && [ "${ALLOW_EMPTY_BACKUP}" != "true" ]; then
+                    echo "refusing to back up an empty database (set ALLOW_EMPTY_BACKUP=true to override)" >&2
+                    exit 1
+                  fi
+                  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+                  pg_dump --format=custom --compress=6 --no-owner --no-privileges \
+                    --file="/work/${stamp}.dump"
+                  (cd /work && sha256sum "${stamp}.dump" > "${stamp}.dump.sha256")
+                  echo "${stamp}" > /work/STAMP
+                  echo "dump complete: ${stamp}.dump ($(wc -c < "/work/${stamp}.dump") bytes)"
+              env:
+                - {name: ALLOW_EMPTY_BACKUP, value: "false"}
+                - {name: PGHOST, value: postgres}
+                - name: PGUSER
+                  valueFrom: {secretKeyRef: {name: postgres-credentials, key: username}}
+                - name: PGPASSWORD
+                  valueFrom: {secretKeyRef: {name: postgres-credentials, key: password}}
+                - name: PGDATABASE
+                  valueFrom: {secretKeyRef: {name: postgres-credentials, key: database}}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: ["ALL"]}
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {memory: 256Mi}
+              volumeMounts:
+                - {name: work, mountPath: /work}
+          containers:
+            - name: upload
+              image: amazon/aws-cli:2.17.56
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "-ec"]
+              args:
+                - |
+                  aws configure set default.s3.addressing_style path
+                  stamp="$(cat /work/STAMP)"
+                  for f in "${stamp}.dump" "${stamp}.dump.sha256"; do
+                    aws --endpoint-url "${VAULT_ENDPOINT}" s3 cp --only-show-errors \
+                      "/work/${f}" "s3://${VAULT_BUCKET}/backups/${f}"
+                  done
+                  echo "BACKUP_OBJECT=backups/${stamp}.dump"
+              env:
+                - {name: HOME, value: /home/aws}
+                - {name: AWS_DEFAULT_REGION, value: us-east-1}
+                - name: VAULT_ENDPOINT
+                  valueFrom: {secretKeyRef: {name: backup-vault, key: endpoint}}
+                - name: VAULT_BUCKET
+                  valueFrom: {secretKeyRef: {name: backup-vault, key: bucket}}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: {secretKeyRef: {name: backup-vault, key: access-key}}
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: {secretKeyRef: {name: backup-vault, key: secret-key}}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: ["ALL"]}
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {memory: 256Mi}
+              volumeMounts:
+                - {name: work, mountPath: /work, readOnly: true}
+                - {name: home, mountPath: /home/aws}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - {name: work, emptyDir: {sizeLimit: 2Gi}}
+            - {name: home, emptyDir: {}}
+            - {name: tmp, emptyDir: {}}
