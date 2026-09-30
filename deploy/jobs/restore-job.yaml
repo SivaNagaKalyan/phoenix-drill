@@ -1,0 +1,102 @@
+# Restore the newest verified backup from the vault into the running database.
+#   1. init container "fetch":   find newest dump, download it, verify sha256
+#   2. container "restore":      pg_restore with --clean so it is safe to re-run
+# Applied by scripts/restore.sh, which sets a unique name per run.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: postgres-restore-
+  namespace: phoenix
+  labels: {app.kubernetes.io/name: postgres-restore, app.kubernetes.io/part-of: phoenix}
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-restore
+        app.kubernetes.io/part-of: phoenix
+        phoenix/db-client: "true"
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: fetch
+          image: amazon/aws-cli:2.17.56
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-ec"]
+          args:
+            - |
+              aws configure set default.s3.addressing_style path
+              s3() { aws --endpoint-url "${VAULT_ENDPOINT}" s3 "$@"; }
+              latest="$(s3 ls "s3://${VAULT_BUCKET}/backups/" | awk '{print $4}' | grep '\.dump$' | sort | tail -n 1)"
+              if [ -z "${latest}" ]; then
+                echo "no backups found in s3://${VAULT_BUCKET}/backups/" >&2
+                exit 1
+              fi
+              s3 cp --only-show-errors "s3://${VAULT_BUCKET}/backups/${latest}" "/work/${latest}"
+              s3 cp --only-show-errors "s3://${VAULT_BUCKET}/backups/${latest}.sha256" "/work/${latest}.sha256"
+              (cd /work && sha256sum --check --strict "${latest}.sha256")
+              ln -s "/work/${latest}" /work/restore.dump
+              echo "RESTORE_OBJECT=backups/${latest}"
+          env:
+            - {name: HOME, value: /home/aws}
+            - {name: AWS_DEFAULT_REGION, value: us-east-1}
+            - name: VAULT_ENDPOINT
+              valueFrom: {secretKeyRef: {name: backup-vault, key: endpoint}}
+            - name: VAULT_BUCKET
+              valueFrom: {secretKeyRef: {name: backup-vault, key: bucket}}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: {secretKeyRef: {name: backup-vault, key: access-key}}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: backup-vault, key: secret-key}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: work, mountPath: /work}
+            - {name: home, mountPath: /home/aws}
+            - {name: tmp, mountPath: /tmp}
+      containers:
+        - name: restore
+          image: postgres:16.4-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              until pg_isready -q; do echo "waiting for database"; sleep 2; done
+              pg_restore --clean --if-exists --no-owner --no-privileges \
+                --exit-on-error --single-transaction --dbname="${PGDATABASE}" /work/restore.dump
+              echo "restore complete: $(psql -tAc 'SELECT count(*) FROM records') records"
+          env:
+            - {name: PGHOST, value: postgres}
+            - name: PGUSER
+              valueFrom: {secretKeyRef: {name: postgres-credentials, key: username}}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: postgres-credentials, key: password}}
+            - name: PGDATABASE
+              valueFrom: {secretKeyRef: {name: postgres-credentials, key: database}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: work, mountPath: /work, readOnly: true}
+      volumes:
+        - {name: work, emptyDir: {sizeLimit: 2Gi}}
+        - {name: home, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
