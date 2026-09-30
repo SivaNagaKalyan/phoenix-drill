@@ -1,0 +1,89 @@
+name: phoenix-drill
+
+# Destroys and rebuilds the whole system from code, then proves the data survived.
+# Runs weekly so disaster recovery is continuously verified, not assumed.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"   # Mondays 03:17 UTC
+  workflow_dispatch:
+    inputs:
+      records:
+        description: Records to write before the backup
+        default: "20000"
+      rto_budget_seconds:
+        description: Fail if recovery takes longer than this
+        default: "600"
+  pull_request:
+    paths: [app/**, deploy/**, kind/**, scripts/**, tools/**, .github/workflows/phoenix.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phoenix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4.2.0
+
+      - name: Install pinned tools
+        run: |
+          bash tools/install-tools.sh
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Run the Phoenix drill
+        env:
+          RECORDS: ${{ inputs.records || '20000' }}
+          RTO_BUDGET_SECONDS: ${{ inputs.rto_budget_seconds || '600' }}
+        run: bash scripts/phoenix.sh
+
+      - name: Upload results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4.4.0
+        with:
+          name: phoenix-results-${{ github.run_id }}
+          path: |
+            .phoenix/results/
+            .phoenix/diagnostics/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 90
+
+  record:
+    # Keep a public, versioned history of every scheduled or manual drill on main.
+    needs: drill
+    # Failed drills are recorded too. A history that only shows passes is not evidence.
+    if: always() && needs.drill.result != 'cancelled' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4.2.0
+      - uses: actions/download-artifact@v4.1.8
+        continue-on-error: true
+        with:
+          name: phoenix-results-${{ github.run_id }}
+          path: artifact
+      - name: Append to results/history.csv
+        run: |
+          r=artifact/results/latest.json
+          if [[ ! -f "${r}" ]]; then
+            printf '"%s","%s","failed",,,,,\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${GITHUB_SHA::12}" >> results/history.csv
+            exit 0
+          fi
+          jq -r '[.started_at, .commit, .status, .rto_seconds, .data_loss_window_seconds,
+                  .records_lost, .records_restored, .drill_total_seconds] | @csv' "${r}" >> results/history.csv
+          cp "${r}" results/latest.json
+      - name: Commit
+        run: |
+          git config user.name "phoenix-drill[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add results/
+          git commit -m "drill: record run ${GITHUB_RUN_ID} [skip ci]"
+          git push
