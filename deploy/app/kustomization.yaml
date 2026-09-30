@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: phoenix
+resources:
+  - ledger.yaml
+images:
+  - name: ledger
+    newName: ledger
+    newTag: dev   # scripts/deploy.sh overrides this with the git commit sha
