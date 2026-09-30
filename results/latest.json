@@ -1,0 +1,21 @@
+{
+  "status": "passed",
+  "started_at": "2026-09-30T08:53:15Z",
+  "commit": "440110a4f159",
+  "rto_seconds": 96,
+  "rto_budget_seconds": 600,
+  "data_loss_window_seconds": 8,
+  "records_lost": 100,
+  "records_expected": 20000,
+  "records_restored": 20000,
+  "checksum_expected": "bc54541f2ab04f4f48e2f66b6ae3e0e48130de660bbdc00875e7482ed285b1a6",
+  "checksum_restored": "bc54541f2ab04f4f48e2f66b6ae3e0e48130de660bbdc00875e7482ed285b1a6",
+  "backup_object": "backups/20260930T085556Z.dump",
+  "restored_object": "backups/20260930T085556Z.dump",
+  "phase_seconds": {
+    "initial_provision": 157,
+    "rebuild_and_restore": 95,
+    "verification": 1
+  },
+  "drill_total_seconds": 283
+}
