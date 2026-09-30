@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
-FROM python:3.12.6-slim-bookworm AS build
+FROM python:3.14.7-slim-bookworm AS build
 WORKDIR /build
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-FROM python:3.12.6-slim-bookworm AS runtime
+FROM python:3.14.7-slim-bookworm AS runtime
 LABEL org.opencontainers.image.title="ledger" \
       org.opencontainers.image.description="Stateful demo service for the Phoenix disaster recovery drill"
 ENV PYTHONDONTWRITEBYTECODE=1 \
