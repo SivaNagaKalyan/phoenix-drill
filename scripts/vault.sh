@@ -24,14 +24,13 @@ up() {
   ensure_credentials
   if [[ "$(docker inspect -f '{{.State.Running}}' "${VAULT_CONTAINER}" 2>/dev/null)" != "true" ]]; then
     docker rm -f "${VAULT_CONTAINER}" >/dev/null 2>&1 || true
-    log "starting vault ${MINIO_IMAGE}"
+    log "building vault image ${VAULT_IMAGE}"
+    docker build --quiet -t "${VAULT_IMAGE}" "${ROOT}/vault" >/dev/null
     docker run -d --name "${VAULT_CONTAINER}" --restart unless-stopped \
       -p "127.0.0.1:${VAULT_HOST_PORT}:9000" \
-      -v "${VAULT_VOLUME}:/data" \
-      -e MINIO_ROOT_USER="${VAULT_ACCESS_KEY}" -e MINIO_ROOT_PASSWORD="${VAULT_SECRET_KEY}" \
-      "${MINIO_IMAGE}" server /data >/dev/null
+      "${VAULT_IMAGE}" >/dev/null
   fi
-  retry 30 1 curl -fsS "http://127.0.0.1:${VAULT_HOST_PORT}/minio/health/live" -o /dev/null \
+  retry 30 1 curl -fsS "http://127.0.0.1:${VAULT_HOST_PORT}/moto-api/" -o /dev/null \
     || die "vault did not become healthy"
   if ! vault_s3 s3api head-bucket --bucket "${VAULT_BUCKET}" >/dev/null 2>&1; then
     vault_s3 s3api create-bucket --bucket "${VAULT_BUCKET}" >/dev/null
@@ -55,14 +54,13 @@ attach() {
 list() { vault_s3 s3 ls "s3://${VAULT_BUCKET}/backups/"; }
 
 down() {
+  # The vault keeps objects in memory, so stopping it discards every backup.
+  # That is why only an explicit "down" touches it; deleting the cluster never does.
   docker rm -f "${VAULT_CONTAINER}" >/dev/null 2>&1 || true
   if [[ "${1:-}" == "--purge" ]]; then
-    docker volume rm "${VAULT_VOLUME}" >/dev/null 2>&1 || true
     rm -f "${STATE_DIR}/vault.env"
-    log "vault and all backups deleted"
-  else
-    log "vault stopped (backups kept in volume ${VAULT_VOLUME})"
   fi
+  log "vault stopped and its backups discarded"
 }
 
 case "${1:-}" in
