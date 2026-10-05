@@ -1,3 +1,4 @@
 "started_at","commit","status","rto_seconds","data_loss_window_seconds","records_lost","records_restored","drill_total_seconds"
 "2026-09-30T08:50:04Z","36e64843b61b","failed",,,,,
 "2026-09-30T08:53:15Z","440110a4f159","passed",96,8,100,20000,283
+"2026-10-05T10:32:25Z","c0054e92d1b8","passed",110,14,100,20000,316
