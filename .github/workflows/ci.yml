@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v5.2.0
         with:
           python-version: "3.12"
@@ -63,7 +63,7 @@ jobs:
           --health-cmd "pg_isready -U ledger"
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v5.2.0
         with:
           python-version: "3.12"
@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v7.0.1
       - name: Build
         run: docker build -t "ledger:${GITHUB_SHA}" app
       - name: Scan for vulnerabilities
